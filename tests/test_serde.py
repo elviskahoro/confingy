@@ -2,7 +2,9 @@
 Tests for confingy.serde module - serialization handlers and context.
 """
 
+import datetime
 import enum
+import json
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -1305,3 +1307,38 @@ def test_path_transpile():
 
     assert 'Path("/data/train")' in code or "Path('/data/train')" in code
     assert "from pathlib import Path" in code
+
+
+# ============================================================================
+# Tests for datetime stdlib types serialization/deserialization (issue #20)
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        datetime.date(2024, 1, 1),
+        datetime.date(1970, 1, 1),
+        datetime.datetime(2024, 1, 1, 12, 34, 56),  # naive
+        datetime.datetime(2024, 1, 1, 12, 34, 56, 123456),  # naive + microseconds
+        datetime.datetime(
+            2024, 1, 1, 12, 34, 56, tzinfo=datetime.timezone.utc
+        ),  # tz-aware UTC
+        datetime.datetime(
+            2024, 1, 1, 12, 34, 56,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=-5)),
+        ),  # tz-aware non-UTC offset
+        datetime.time(12, 34, 56),
+        datetime.time(0, 0, 0, 1),  # microsecond resolution
+        datetime.timedelta(days=1, hours=2, minutes=3, seconds=4),  # positive
+        datetime.timedelta(0),  # zero
+        datetime.timedelta(seconds=-90),  # negative
+        datetime.timedelta(microseconds=123456),  # sub-second
+    ],
+)
+def test_datetime_roundtrip(value):
+    """Round-trip each datetime stdlib type through serialize_fingy."""
+    serialized = serialize_fingy(value)
+    restored = deserialize_fingy(serialized)
+    assert restored == value
+    assert type(restored) is type(value)
