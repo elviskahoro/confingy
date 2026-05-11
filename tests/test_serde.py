@@ -296,6 +296,10 @@ def test_handler_order_matters():
     primitive_index = handler_names.index("PrimitiveHandler")
     assert enum_index < primitive_index
 
+    # DatetimeHandler must come before PrimitiveHandler (datetime values are leaves, not primitives)
+    datetime_index = handler_names.index("DatetimeHandler")
+    assert datetime_index < primitive_index
+
     # Lazy and TrackedInstance should come before generic handlers
     lazy_index = handler_names.index("LazyHandler")
     tracked_index = handler_names.index("TrackedInstanceHandler")
@@ -610,6 +614,7 @@ def test_handler_registry():
         "TrackedInstanceHandler",
         "CollectionHandler",
         "TypeHandler",  # Added TypeHandler
+        "DatetimeHandler",
     ]
 
     for expected in expected_handlers:
@@ -1342,3 +1347,14 @@ def test_datetime_roundtrip(value):
     restored = deserialize_fingy(serialized)
     assert restored == value
     assert type(restored) is type(value)
+
+
+def test_datetime_dispatches_before_date_for_datetime_instance():
+    """A datetime.datetime must serialize as 'datetime', not 'date'.
+
+    datetime.datetime subclasses datetime.date, so a sloppy isinstance check
+    would route it to the date branch.
+    """
+    serialized = serialize_fingy(datetime.datetime(2024, 1, 1, 12, 0, 0))
+    assert serialized["_confingy_class"] == "datetime"
+    assert serialized["_confingy_module"] == "datetime"
