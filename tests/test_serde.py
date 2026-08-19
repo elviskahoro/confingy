@@ -2,7 +2,9 @@
 Tests for confingy.serde module - serialization handlers and context.
 """
 
+import datetime
 import enum
+import json
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -293,6 +295,10 @@ def test_handler_order_matters():
     enum_index = handler_names.index("EnumHandler")
     primitive_index = handler_names.index("PrimitiveHandler")
     assert enum_index < primitive_index
+
+    # DatetimeHandler must come before PrimitiveHandler (datetime values are leaves, not primitives)
+    datetime_index = handler_names.index("DatetimeHandler")
+    assert datetime_index < primitive_index
 
     # Lazy and TrackedInstance should come before generic handlers
     lazy_index = handler_names.index("LazyHandler")
@@ -608,6 +614,7 @@ def test_handler_registry():
         "TrackedInstanceHandler",
         "CollectionHandler",
         "TypeHandler",  # Added TypeHandler
+        "DatetimeHandler",
     ]
 
     for expected in expected_handlers:
@@ -1028,8 +1035,6 @@ class Downloader:
 
 def _save_tracked_downloader(path: str):
     """Helper function to save a tracked Downloader in a separate process."""
-    import json
-
     from confingy import serialize_fingy, track
 
     downloader = track(Downloader)(
@@ -1305,3 +1310,71 @@ def test_path_transpile():
 
     assert 'Path("/data/train")' in code or "Path('/data/train')" in code
     assert "from pathlib import Path" in code
+
+
+# ============================================================================
+# Tests for datetime stdlib types serialization/deserialization (issue #20)
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        datetime.date(2024, 1, 1),
+        datetime.date(1970, 1, 1),
+        datetime.datetime(2024, 1, 1, 12, 34, 56),  # naive
+        datetime.datetime(2024, 1, 1, 12, 34, 56, 123456),  # naive + microseconds
+        datetime.datetime(
+            2024, 1, 1, 12, 34, 56, tzinfo=datetime.timezone.utc
+        ),  # tz-aware UTC
+        datetime.datetime(
+            2024,
+            1,
+            1,
+            12,
+            34,
+            56,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=-5)),
+        ),  # tz-aware non-UTC offset
+        datetime.time(12, 34, 56),
+        datetime.time(0, 0, 0, 1),  # microsecond resolution
+        datetime.timedelta(days=1, hours=2, minutes=3, seconds=4),  # positive
+        datetime.timedelta(0),  # zero
+        datetime.timedelta(seconds=-90),  # negative
+        datetime.timedelta(microseconds=123456),  # sub-second
+    ],
+)
+def test_datetime_roundtrip(value):
+    """Round-trip each datetime stdlib type through serialize_fingy."""
+    serialized = serialize_fingy(value)
+    restored = deserialize_fingy(serialized)
+    assert restored == value
+    assert type(restored) is type(value)
+
+
+def test_datetime_dispatches_before_date_for_datetime_instance():
+    """A datetime.datetime must serialize as 'datetime', not 'date'.
+
+    datetime.datetime subclasses datetime.date, so a sloppy isinstance check
+    would route it to the date branch.
+    """
+    serialized = serialize_fingy(datetime.datetime(2024, 1, 1, 12, 0, 0))
+    assert serialized["_confingy_class"] == "datetime"
+    assert serialized["_confingy_module"] == "datetime"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        datetime.date(2024, 1, 1),
+        datetime.datetime(2024, 1, 1, 12, 34, 56, tzinfo=datetime.timezone.utc),
+        datetime.time(12, 34, 56),
+        datetime.timedelta(days=1, seconds=93784),
+    ],
+)
+def test_datetime_serialization_is_json_safe(value):
+    """Serialized datetime values must survive json.dumps/json.loads."""
+    serialized = serialize_fingy(value)
+    restored = deserialize_fingy(json.loads(json.dumps(serialized)))
+    assert restored == value
+    assert type(restored) is type(value)

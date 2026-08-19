@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 import enum
 import importlib
 import inspect
@@ -315,6 +316,80 @@ class PathHandler(SerializationHandler):
         if data.get(SerializationKeys.MODULE) != "pathlib":
             return None
         return Path(data.get(SerializationKeys.NAME, ""))
+
+
+class DatetimeHandler(SerializationHandler):
+    """Handler for ``datetime`` stdlib leaf types.
+
+    Covers ``datetime.date``, ``datetime.datetime``, ``datetime.time``, and
+    ``datetime.timedelta``. Serialized as a leaf using the same
+    ``{_confingy_class, _confingy_module, _confingy_name}`` envelope as
+    :class:`PathHandler`.
+
+    Wire formats::
+
+        date       -> {"_confingy_class": "date",      "_confingy_module": "datetime", "_confingy_name": "2024-01-01"}
+        datetime   -> {"_confingy_class": "datetime",  "_confingy_module": "datetime", "_confingy_name": "2024-01-01T12:34:56+00:00"}
+        time       -> {"_confingy_class": "time",      "_confingy_module": "datetime", "_confingy_name": "12:34:56"}
+        timedelta  -> {"_confingy_class": "timedelta", "_confingy_module": "datetime", "_confingy_name": 93784.0}
+
+    ``date`` / ``datetime`` / ``time`` use ``isoformat()`` / ``fromisoformat()``.
+    Exact round-trip is guaranteed for values that ``isoformat()`` itself emits
+    on the same Python version (the only values we ever feed back in).
+
+    ``timedelta`` uses ``total_seconds()`` (float) for the wire value because the
+    stdlib has no ``timedelta.fromisoformat``. ``total_seconds()`` preserves
+    microsecond resolution exactly for every ``timedelta`` representable by the
+    stdlib; sub-microsecond inputs are already clamped at construction time.
+
+    Dispatch is by exact ``type(obj)`` rather than ``isinstance`` because
+    ``datetime.datetime`` subclasses ``datetime.date`` — a naive isinstance
+    check would mis-serialize datetimes as dates.
+    """
+
+    # Map of exact stdlib type -> (wire class name) used for both directions.
+    _TYPES = {
+        datetime.datetime: "datetime",
+        datetime.date: "date",
+        datetime.time: "time",
+        datetime.timedelta: "timedelta",
+    }
+
+    def can_handle(self, obj: Any) -> bool:
+        return type(obj) in self._TYPES
+
+    def serialize(self, obj: Any, context: SerializationContext) -> dict[str, Any]:
+        cls = type(obj)
+        if cls is datetime.timedelta:
+            name: Any = obj.total_seconds()
+        else:
+            name = obj.isoformat()
+        return {
+            SerializationKeys.CLASS: self._TYPES[cls],
+            SerializationKeys.MODULE: "datetime",
+            SerializationKeys.NAME: name,
+        }
+
+    def deserialize(self, data: Any, context: DeserializationContext) -> Any:
+        if not isinstance(data, dict):
+            return None
+        if data.get(SerializationKeys.MODULE) != "datetime":
+            return None
+        class_name = data.get(SerializationKeys.CLASS)
+        name = data.get(SerializationKeys.NAME)
+        if class_name in ("date", "datetime", "time"):
+            if not isinstance(name, str):
+                return None
+            if class_name == "date":
+                return datetime.date.fromisoformat(name)
+            if class_name == "datetime":
+                return datetime.datetime.fromisoformat(name)
+            return datetime.time.fromisoformat(name)
+        if class_name == "timedelta":
+            if not isinstance(name, (int, float)):
+                return None
+            return datetime.timedelta(seconds=float(name))
+        return None
 
 
 class LazyHandler(SerializationHandler):
@@ -696,6 +771,7 @@ class HandlerRegistry:
         return [
             PathHandler(),  # Must be before PrimitiveHandler (Path is not a primitive)
             EnumHandler(),  # Must be before PrimitiveHandler (StrEnum/IntEnum are str/int)
+            DatetimeHandler(),  # Must be before PrimitiveHandler (datetime types are leaves, not primitives)
             PrimitiveHandler(),
             LazyHandler(),
             TrackedInstanceHandler(),
